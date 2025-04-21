@@ -1,0 +1,16 @@
+# 虚拟环境
+venv-pke/
+.venv/
+env/
+ENV/
+
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 数据文件夹
+data/
+
+# 环境变量文件
+.env
