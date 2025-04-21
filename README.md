@@ -1,4 +1,6 @@
 # 个人知识库增强剂
+![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey.svg)
+
 
 一个基于AI的个人知识管理系统，能够智能处理和检索您的文档，帮助您更快地找到信息。
 
@@ -72,3 +74,9 @@ streamlit run app.py --server.headless true
 - 实现个性化学习路径推荐
 - 支持更多文件格式（如PPT、HTML等）
 - 添加协作功能
+
+## 📜 版权声明
+
+本项目由 [Erhan Lai](https://github.com/RyleHan/personal-knowledge-project) 独立设计与开发，版权所有 © 2025。
+
+本项目遵循 [CC BY-NC-ND 4.0 License](https://creativecommons.org/licenses/by-nc-nd/4.0/)，禁止用于商业用途与改编创作，转载请注明出处。
