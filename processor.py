@@ -5,6 +5,7 @@ from langchain_community.vectorstores import Chroma
 from anthropic import Anthropic
 import os
 from typing import List, Dict, Any
+import json
 
 class DocumentProcessor:
     def __init__(self, api_key, openai_api_key=None, collection_name="personal_knowledge"):
@@ -107,6 +108,42 @@ class DocumentProcessor:
             "sources": sources
         }
     
+    def parse_concepts_json(self, concepts_text):
+        """尝试多种方法解析概念JSON"""
+        # 首先尝试直接解析
+        try:
+            return json.loads(concepts_text)
+        except:
+            pass
+        
+        # 尝试提取 JSON 部分
+        import re
+        json_pattern = r'\{[\s\S]*\}'
+        match = re.search(json_pattern, concepts_text)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except:
+                pass
+        
+        # 如果无法解析，创建简单的结构
+        # 尝试从文本中提取键值对
+        concepts = {}
+        lines = concepts_text.split('\n')
+        for line in lines:
+            if ':' in line:
+                parts = line.split(':', 1)
+                key = parts[0].strip().strip('"\'')
+                value = parts[1].strip().strip('"\'')
+                if key and value:
+                    concepts[key] = value
+        
+        if concepts:
+            return concepts
+        
+        # 实在不行，返回一个简单结构
+        return {"未能解析": "无法从响应中提取结构化概念"}
+
     def extract_key_concepts(self, file_path):
         """提取文档中的关键概念"""
         documents = self.load_document(file_path)
@@ -124,7 +161,13 @@ class DocumentProcessor:
             messages=[
                 {"role": "user", "content": f"""
                 请分析以下文本片段，提取5-10个关键概念或术语，以及它们的简短解释。
-                返回格式为JSON格式，包含概念名称和解释。
+                返回格式必须是严格的JSON格式，包含概念名称和解释：
+                
+                {{
+                    "概念1": "解释1",
+                    "概念2": "解释2",
+                    ...
+                }}
                 
                 文本片段:
                 {preview}
@@ -132,4 +175,128 @@ class DocumentProcessor:
             ]
         )
         
-        return response.content[0].text
+        # 使用增强的解析函数
+        concepts_text = response.content[0].text
+        return concepts_text  # 返回原始文本，后续解析时再处理
+
+    def extract_knowledge_relations(self, documents):
+        """提取文档之间的知识关联"""
+        # 获取所有文档的摘要和关键概念
+        doc_concepts = {}
+        relations = []
+        
+        for doc_path in documents:
+            if not os.path.exists(doc_path):
+                continue
+            
+            file_name = os.path.basename(doc_path)
+            concepts_json = self.extract_key_concepts(doc_path)
+            
+            try:
+                # 尝试解析JSON格式的概念
+                concepts = json.loads(concepts_json)
+                doc_concepts[file_name] = concepts
+            except:
+                continue
+        
+        # 使用Claude分析文档间的关系
+        if len(doc_concepts) > 1:
+            doc_pairs = [(name1, concepts1, name2, concepts2) 
+                        for (name1, concepts1) in doc_concepts.items() 
+                        for (name2, concepts2) in doc_concepts.items() 
+                        if name1 != name2]
+            
+            for name1, concepts1, name2, concepts2 in doc_pairs:
+                response = self.client.messages.create(
+                    model="claude-3-7-sonnet-20250219",
+                    max_tokens=500,
+                    messages=[
+                        {"role": "user", "content": f"""
+                        请分析这两个文档的概念之间可能存在的关系:
+                        
+                        文档1: {name1}
+                        概念: {json.dumps(concepts1, ensure_ascii=False)}
+                        
+                        文档2: {name2}
+                        概念: {json.dumps(concepts2, ensure_ascii=False)}
+                        
+                        返回JSON格式的关系列表:
+                        [
+                            {{
+                                "source_doc": "文档1名称",
+                                "target_doc": "文档2名称",
+                                "source_concept": "概念1",
+                                "target_concept": "概念2",
+                                "relation_type": "关系类型(相似/前置/扩展/示例/对立/包含)",
+                                "strength": 0.8 // 关系强度0-1
+                            }}
+                        ]
+                        
+                        仅返回确定存在的关系，不要猜测。如果没有明确关系，返回空列表。
+                        """}
+                    ]
+                )
+                
+                try:
+                    new_relations = json.loads(response.content[0].text)
+                    relations.extend(new_relations)
+                except:
+                    continue
+                
+        return relations
+
+    def calculate_document_similarity(self, doc_paths):
+        """计算文档间的相似度"""
+        similarities = []
+        
+        # 为每个文档生成嵌入向量
+        doc_embeddings = {}
+        for path in doc_paths:
+            if not os.path.exists(path):
+                continue
+            
+            file_name = os.path.basename(path)
+            docs = self.load_document(path)
+            full_text = " ".join([doc.page_content for doc in docs])
+            
+            # 获取文档的嵌入向量
+            embedding = self.vectordb._embedding_function.embed_documents([full_text])[0]
+            doc_embeddings[file_name] = embedding
+        
+        # 计算文档间的相似度 - 避免导入问题的方法
+        import numpy as np
+        
+        # 手动实现余弦相似度计算
+        def cosine_sim(v1, v2):
+            # 转为numpy数组
+            v1_np = np.array(v1)
+            v2_np = np.array(v2)
+            
+            # 计算余弦相似度
+            dot_product = np.dot(v1_np, v2_np)
+            norm_v1 = np.linalg.norm(v1_np)
+            norm_v2 = np.linalg.norm(v2_np)
+            
+            # 避免除零错误
+            if norm_v1 == 0 or norm_v2 == 0:
+                return 0.0
+            
+            return dot_product / (norm_v1 * norm_v2)
+        
+        doc_names = list(doc_embeddings.keys())
+        for i in range(len(doc_names)):
+            for j in range(i+1, len(doc_names)):
+                name1, name2 = doc_names[i], doc_names[j]
+                vec1, vec2 = doc_embeddings[name1], doc_embeddings[name2]
+                
+                sim_score = float(cosine_sim(vec1, vec2))
+                
+                if sim_score > 0.5:  # 只保留相似度较高的关系
+                    similarities.append({
+                        "source": name1,
+                        "target": name2,
+                        "strength": sim_score,
+                        "type": "similar"
+                    })
+        
+        return similarities
